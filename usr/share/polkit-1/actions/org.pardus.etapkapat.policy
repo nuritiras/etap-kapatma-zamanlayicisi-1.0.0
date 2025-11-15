@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.0.dtd">
+<policyconfig>
+  <action id="org.pardus.etapkapat.run">
+    <message>ETAP Kapatma Zamanlayıcısı'nı çalıştırmak için kimlik doğrulaması gerekiyor</message>
+    <message xml:lang="tr">ETAP Kapatma Zamanlayıcısı'nı çalıştırmak için kimlik doğrulaması gerekiyor</message>
+    <icon_name>etap-kapat</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/etap-kapatma-zamanlayicisi</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

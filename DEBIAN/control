@@ -1,0 +1,9 @@
+Package: etap-kapatma-zamanlayicisi
+Version: 1.0.0
+Architecture: all
+Maintainer: [TSOMTAL] <[admin@tsomtal.com]>
+Description: Pardus ETAP Otomatik Kapatma Zamanlayıcısı
+ ETAP akıllı tahtaları için belirli bir süre sonra veya
+ belirli bir saatte otomatik kapanma zamanlayıcısı ayarlayan
+ bir GTK3 uygulamasıdır.
+Depends: python3, python3-gi

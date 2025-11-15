@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import gi
+gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk, Gdk, GLib, Pango
+import subprocess
+import os
+import sys
+import re
+import threading
+import time
+
+class AutoShutdownGUI:
+    def __init__(self):
+        # Ana pencere oluştur
+        self.window = Gtk.Window()
+        self.window.set_title("TSOMTAL Kapatma Zamanlayıcısı")
+        self.window.set_default_size(550, 500)
+        self.window.set_resizable(False)
+        self.window.set_position(Gtk.WindowPosition.CENTER)
+        self.window.set_border_width(10)
+        
+        # CSS stilini yükle
+        self.load_css()
+        
+        # Ana kutu
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.window.add(main_box)
+        
+        # Başlık
+        title_label = Gtk.Label()
+        title_label.set_markup("<span size='x-large' weight='bold'>🖥️ ETAP Tahta Kapatma Zamanlayıcısı</span>")
+        title_label.set_justify(Gtk.Justification.CENTER)
+        main_box.pack_start(title_label, False, False, 10)
+        
+        # Ayırıcı
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        main_box.pack_start(separator, False, False, 5)
+        
+        # Durum bilgisi
+        status_frame = Gtk.Frame(label=" Mevcut Durum ")
+        status_frame.get_style_context().add_class('status-frame')
+        main_box.pack_start(status_frame, False, False, 5)
+        
+        status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        status_frame.add(status_box)
+        
+        self.status_label = Gtk.Label(label="Sistem kontrol ediliyor...")
+        self.status_label.set_justify(Gtk.Justification.CENTER)
+        status_box.pack_start(self.status_label, True, True, 10)
+        
+        # İlerleme çubuğu
+        self.progress_bar = Gtk.ProgressBar()
+        self.progress_bar.set_visible(False)
+        status_box.pack_start(self.progress_bar, False, False, 5)
+        
+        # Kaldırma butonu
+        self.remove_button = Gtk.Button.new_with_label("❌ Mevcut Zamanlayıcıyı Kaldır")
+        self.remove_button.get_style_context().add_class('remove-button')
+        self.remove_button.connect("clicked", self.on_remove_clicked)
+        self.remove_button.set_sensitive(False)
+        main_box.pack_start(self.remove_button, False, False, 5)
+        
+        # Ayırıcı
+        separator2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        main_box.pack_start(separator2, False, False, 10)
+        
+        # Not defteri (sekmeler)
+        notebook = Gtk.Notebook()
+        notebook.set_tab_pos(Gtk.PositionType.TOP)
+        main_box.pack_start(notebook, True, True, 0)
+        
+        # Sekme 1: Süre sonra kapatma
+        self.create_timer_tab(notebook)
+        
+        # Sekme 2: Saatte kapatma
+        self.create_schedule_tab(notebook)
+        
+        # Bilgi alanı
+        info_frame = Gtk.Frame(label=" Bilgi ")
+        info_frame.get_style_context().add_class('info-frame')
+        main_box.pack_start(info_frame, False, False, 5)
+        
+        info_text = """• Sistem belirtilen süre/saat sonunda tamamen kapanacaktır
+• Zamanlayıcıyı istediğiniz zaman kaldırabilirsiniz
+• Bu pencereyi kapatmanız zamanlayıcıyı etkilemez
+• İşlemler için yönetici şifresi gerekebilir"""
+        
+        info_label = Gtk.Label(label=info_text)
+        info_label.set_justify(Gtk.Justification.LEFT)
+        info_label.set_line_wrap(True)
+        info_frame.add(info_label)
+        
+        # Pencereyi göster
+        self.window.connect("destroy", Gtk.main_quit)
+        self.window.show_all()
+        
+        # Butonları başlangıçta devre dışı bırak
+        self.set_timer_button.set_sensitive(False)
+        self.set_schedule_button.set_sensitive(False)
+        
+        # Durumu kontrol et
+        GLib.timeout_add(100, self.check_timer_status)
+    
+    def load_css(self):
+        """CSS stilini yükle"""
+        css = """
+        .status-frame {
+            background: #f8f9fa;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        .info-frame {
+            background: #e3f2fd;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        .remove-button {
+            background: #ffebee;
+            border: 1px solid #f44336;
+            border-radius: 5px;
+            padding: 8px;
+        }
+        .success-text {
+            color: #2e7d32;
+            font-weight: bold;
+        }
+        .error-text {
+            color: #c62828;
+            font-weight: bold;
+        }
+        .warning-text {
+            color: #ef6c00;
+            font-weight: bold;
+        }
+        .timer-frame {
+            background: #f3e5f5;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        .schedule-frame {
+            background: #e8f5e8;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        button {
+            border-radius: 5px;
+            padding: 8px 12px;
+        }
+        button:hover {
+            background: #e0e0e0;
+        }
+        .disabled-button {
+            background: #bdbdbd;
+            color: #757575;
+        }
+        """
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(css.encode())
+        screen = Gdk.Screen.get_default()
+        style_context = Gtk.StyleContext()
+        style_context.add_provider_for_screen(screen, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    
+    def create_timer_tab(self, notebook):
+        """Süre sonra kapatma sekmesi"""
+        timer_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        timer_box.set_border_width(15)
+        
+        # Başlık
+        timer_label = Gtk.Label()
+        timer_label.set_markup("<span weight='bold' size='large'>⏰ Belirli Süre Sonra Kapat</span>")
+        timer_label.set_justify(Gtk.Justification.CENTER)
+        timer_box.pack_start(timer_label, False, False, 5)
+        
+        # Giriş çerçevesi
+        input_frame = Gtk.Frame(label=" Kapanma Süresi ")
+        input_frame.get_style_context().add_class('timer-frame')
+        timer_box.pack_start(input_frame, False, False, 10)
+        
+        input_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        input_box.set_border_width(15)
+        input_frame.add(input_box)
+        
+        # Giriş alanı
+        entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        input_box.pack_start(entry_box, False, False, 0)
+        
+        entry_label = Gtk.Label(label="Dakika sonra kapat:")
+        entry_box.pack_start(entry_label, False, False, 0)
+        
+        self.minutes_entry = Gtk.Entry()
+        self.minutes_entry.set_width_chars(10)
+        self.minutes_entry.set_placeholder_text("Örnek: 30")
+        self.minutes_entry.connect("changed", self.on_minutes_changed)
+        entry_box.pack_start(self.minutes_entry, False, False, 0)
+        
+        entry_label2 = Gtk.Label(label="dakika")
+        entry_box.pack_start(entry_label2, False, False, 0)
+        
+        # Ayarla butonu
+        self.set_timer_button = Gtk.Button.new_with_label("✅ Zamanlayıcıyı Ayarla")
+        self.set_timer_button.connect("clicked", self.on_set_timer_clicked)
+        input_box.pack_start(self.set_timer_button, False, False, 5)
+        
+        # Hızlı ayarlar
+        quick_frame = Gtk.Frame(label=" Hızlı Ayarlar ")
+        quick_frame.get_style_context().add_class('timer-frame')
+        timer_box.pack_start(quick_frame, False, False, 5)
+        
+        quick_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        quick_box.set_border_width(10)
+        quick_frame.add(quick_box)
+        
+        quick_times = [("5 Dakika", "5"), ("30 Dakika", "30"), 
+                      ("1 Saat", "60"), ("2 Saat", "120")]
+        
+        for text, minutes in quick_times:
+            button = Gtk.Button.new_with_label(text)
+            button.connect("clicked", self.on_quick_time_clicked, minutes)
+            quick_box.pack_start(button, True, True, 2)
+        
+        # Sekmeyi ekle
+        timer_tab_label = Gtk.Label(label="Süre Sonra")
+        notebook.append_page(timer_box, timer_tab_label)
+    
+    def create_schedule_tab(self, notebook):
+        """Belirli saatte kapatma sekmesi"""
+        schedule_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        schedule_box.set_border_width(15)
+        
+        # Başlık
+        schedule_label = Gtk.Label()
+        schedule_label.set_markup("<span weight='bold' size='large'>🕐 Belirli Saatte Kapat</span>")
+        schedule_label.set_justify(Gtk.Justification.CENTER)
+        schedule_box.pack_start(schedule_label, False, False, 5)
+        
+        # Giriş çerçevesi
+        input_frame = Gtk.Frame(label=" Kapanma Saati ")
+        input_frame.get_style_context().add_class('schedule-frame')
+        schedule_box.pack_start(input_frame, False, False, 10)
+        
+        input_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        input_box.set_border_width(15)
+        input_frame.add(input_box)
+        
+        # Saat girişi
+        time_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        input_box.pack_start(time_box, False, False, 0)
+        
+        time_label = Gtk.Label(label="Saat:")
+        time_box.pack_start(time_label, False, False, 0)
+        
+        self.hour_entry = Gtk.Entry()
+        self.hour_entry.set_width_chars(5)
+        self.hour_entry.set_placeholder_text("17")
+        self.hour_entry.set_max_length(2)
+        self.hour_entry.connect("changed", self.on_time_changed)
+        time_box.pack_start(self.hour_entry, False, False, 0)
+        
+        colon_label = Gtk.Label(label=":")
+        time_box.pack_start(colon_label, False, False, 0)
+        
+        self.minute_entry = Gtk.Entry()
+        self.minute_entry.set_width_chars(5)
+        self.minute_entry.set_placeholder_text("30")
+        self.minute_entry.set_max_length(2)
+        self.minute_entry.connect("changed", self.on_time_changed)
+        time_box.pack_start(self.minute_entry, False, False, 0)
+        
+        format_label = Gtk.Label(label="(24 saat formatı)")
+        format_label.get_style_context().add_class('warning-text')
+        time_box.pack_start(format_label, False, False, 5)
+        
+        # Ayarla butonu
+        self.set_schedule_button = Gtk.Button.new_with_label("✅ Zamanlayıcıyı Ayarla")
+        self.set_schedule_button.connect("clicked", self.on_set_schedule_clicked)
+        input_box.pack_start(self.set_schedule_button, False, False, 5)
+        
+        # Hızlı ayarlar
+        quick_frame = Gtk.Frame(label=" Hızlı Ayarlar ")
+        quick_frame.get_style_context().add_class('schedule-frame')
+        schedule_box.pack_start(quick_frame, False, False, 5)
+        
+        quick_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        quick_box.set_border_width(10)
+        quick_frame.add(quick_box)
+        
+        quick_times = [("17:00", "17", "00"), ("18:30", "18", "30"),
+                      ("22:00", "22", "00"), ("23:45", "23", "45")]
+        
+        for text, hour, minute in quick_times:
+            button = Gtk.Button.new_with_label(text)
+            button.connect("clicked", self.on_quick_schedule_clicked, hour, minute)
+            quick_box.pack_start(button, True, True, 2)
+        
+        # Sekmeyi ekle
+        schedule_tab_label = Gtk.Label(label="Saatte Kapat")
+        notebook.append_page(schedule_box, schedule_tab_label)
+    
+    def on_minutes_changed(self, entry):
+        """Dakika girişi değiştiğinde buton durumunu güncelle"""
+        text = entry.get_text().strip()
+        if text and text.isdigit() and int(text) > 0:
+            self.set_timer_button.set_sensitive(True)
+            self.set_timer_button.get_style_context().remove_class('disabled-button')
+        else:
+            self.set_timer_button.set_sensitive(False)
+            self.set_timer_button.get_style_context().add_class('disabled-button')
+    
+    def on_time_changed(self, entry):
+        """Saat veya dakika girişi değiştiğinde buton durumunu güncelle"""
+        hour = self.hour_entry.get_text().strip()
+        minute = self.minute_entry.get_text().strip()
+        
+        if (hour and hour.isdigit() and minute and minute.isdigit() and
+            0 <= int(hour) <= 23 and 0 <= int(minute) <= 59):
+            self.set_schedule_button.set_sensitive(True)
+            self.set_schedule_button.get_style_context().remove_class('disabled-button')
+        else:
+            self.set_schedule_button.set_sensitive(False)
+            self.set_schedule_button.get_style_context().add_class('disabled-button')
+    
+    def on_quick_time_clicked(self, button, minutes):
+        """Hızlı süre butonu tıklandığında"""
+        self.minutes_entry.set_text(minutes)
+    
+    def on_quick_schedule_clicked(self, button, hour, minute):
+        """Hızlı saat butonu tıklandığında"""
+        self.hour_entry.set_text(hour)
+        self.minute_entry.set_text(minute)
+    
+    def run_command(self, command, sudo=False):
+        """Komut çalıştırma"""
+        try:
+            if sudo:
+                command = ['sudo'] + command
+            
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            return True, result.stdout
+        except subprocess.CalledProcessError as e:
+            return False, e.stderr
+    
+    def check_timer_status(self):
+        """Zamanlayıcı durumunu kontrol et"""
+        try:
+            success, output = self.run_command(['systemctl', 'is-active', 'tahta-kapat.timer'])
+            
+            if success and 'active' in output:
+                # Zamanlayıcı aktif, detayları al
+                success, timer_info = self.run_command(['systemctl', 'list-timers', 'tahta-kapat.timer', '--no-pager'])
+                
+                status_text = "✅ Zamanlayıcı aktif"
+                if success and timer_info.strip():
+                    lines = timer_info.strip().split('\n')
+                    # Timer listesi çıktısını güvenli şekilde parse et
+                    if len(lines) >= 3:
+                        timer_line = lines[2]  # Timer bilgisi bu satırda
+                        parts = timer_line.split()
+                        if len(parts) >= 4:
+                            # Tarih ve saat bilgilerini al
+                            next_time = f"{parts[2]} {parts[3]}"
+                            left_time = parts[4] if len(parts) > 4 else ""
+                            if len(parts) > 5:
+                                left_time += f" {parts[5]}"
+                            status_text = f"✅ Zamanlayıcı aktif - Sonraki: {next_time} ({left_time} kaldı)"
+                
+                self.status_label.set_text(status_text)
+                self.status_label.get_style_context().add_class('success-text')
+                self.status_label.get_style_context().remove_class('error-text')
+                self.remove_button.set_sensitive(True)
+            else:
+                self.status_label.set_text("❌ Zamanlayıcı aktif değil")
+                self.status_label.get_style_context().add_class('error-text')
+                self.status_label.get_style_context().remove_class('success-text')
+                self.remove_button.set_sensitive(True)
+        except Exception as e:
+            # Hata durumunda basit durum göster
+            self.status_label.set_text("❌ Durum kontrol edilemedi")
+            self.status_label.get_style_context().add_class('error-text')
+            self.status_label.get_style_context().remove_class('success-text')
+            self.remove_button.set_sensitive(False)
+        
+        return True
+    
+    def on_remove_clicked(self, button):
+        """Zamanlayıcıyı kaldır butonu"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Zamanlayıcıyı Kaldır"
+        )
+        dialog.format_secondary_text("Mevcut zamanlayıcıyı kaldırmak istediğinizden emin misiniz?")
+        
+        response = dialog.run()
+        dialog.destroy()
+        
+        if response == Gtk.ResponseType.YES:
+            self.show_progress("Zamanlayıcı kaldırılıyor...")
+            threading.Thread(target=self.remove_timer_thread, daemon=True).start()
+    
+    def remove_timer_thread(self):
+        """Zamanlayıcıyı kaldırma işlemini thread'de çalıştır"""
+        commands = [
+            ['systemctl', 'stop', 'tahta-kapat.timer'],
+            ['systemctl', 'disable', 'tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/multi-user.target.wants/tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/tahta-kapat.service'],
+            ['systemctl', 'daemon-reload']
+        ]
+        
+        for i, cmd in enumerate(commands):
+            success, output = self.run_command(cmd, sudo=True)
+            if not success:
+                GLib.idle_add(self.show_error_dialog, "Kaldırma Hatası", 
+                             f"Kaldırma işlemi sırasında hata:\n{output}")
+                GLib.idle_add(self.hide_progress)
+                return
+            # İlerleme çubuğunu güncelle
+            progress = (i + 1) / len(commands)
+            GLib.idle_add(self.update_progress, progress)
+        
+        GLib.idle_add(self.show_info_dialog, "Başarılı", "Zamanlayıcı başarıyla kaldırıldı!")
+        GLib.idle_add(self.hide_progress)
+        GLib.idle_add(self.check_timer_status)
+    
+    def on_set_timer_clicked(self, button):
+        """Süre sonra kapatma ayarla"""
+        minutes = self.minutes_entry.get_text().strip()
+        
+        if not minutes:
+            self.show_error_dialog("Hata", "Lütfen bir dakika değeri girin!")
+            return
+        
+        if not minutes.isdigit():
+            self.show_error_dialog("Hata", "Lütfen geçerli bir sayı girin!")
+            return
+        
+        minutes_int = int(minutes)
+        if minutes_int <= 0:
+            self.show_error_dialog("Hata", "Lütfen 0'dan büyük bir değer girin!")
+            return
+        
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Zamanlayıcıyı Ayarla"
+        )
+        dialog.format_secondary_text(f"Tahta {minutes} dakika sonra kapanacak şekilde ayarlansın mı?\n\nBu işlem sistemin tamamen kapanmasına neden olacaktır!")
+        
+        response = dialog.run()
+        dialog.destroy()
+        
+        if response == Gtk.ResponseType.YES:
+            self.show_progress("Zamanlayıcı ayarlanıyor...")
+            threading.Thread(target=self.set_timer_thread, args=(minutes,), daemon=True).start()
+    
+    def on_set_schedule_clicked(self, button):
+        """Belirli saatte kapatma ayarla"""
+        hour = self.hour_entry.get_text().strip()
+        minute = self.minute_entry.get_text().strip()
+        
+        if not hour or not minute:
+            self.show_error_dialog("Hata", "Lütfen saat ve dakika değerlerini girin!")
+            return
+        
+        if not hour.isdigit() or not minute.isdigit():
+            self.show_error_dialog("Hata", "Lütfen geçerli sayılar girin!")
+            return
+        
+        hour_int = int(hour)
+        minute_int = int(minute)
+        
+        if hour_int < 0 or hour_int > 23:
+            self.show_error_dialog("Hata", "Saat 0-23 arasında olmalıdır!")
+            return
+        
+        if minute_int < 0 or minute_int > 59:
+            self.show_error_dialog("Hata", "Dakika 0-59 arasında olmalıdır!")
+            return
+        
+        saat_dakika = f"{hour:>02}:{minute:>02}"
+        
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Zamanlayıcıyı Ayarla"
+        )
+        dialog.format_secondary_text(f"Tahta her gün saat {saat_dakika}'de kapanacak şekilde ayarlansın mı?\n\nBu işlem sistemin tamamen kapanmasına neden olacaktır!")
+        
+        response = dialog.run()
+        dialog.destroy()
+        
+        if response == Gtk.ResponseType.YES:
+            self.show_progress("Zamanlayıcı ayarlanıyor...")
+            threading.Thread(target=self.set_schedule_thread, args=(saat_dakika,), daemon=True).start()
+    
+    def set_timer_thread(self, minutes):
+        """Süre sonra kapatma zamanlayıcısını thread'de ayarla"""
+        # Önce mevcut zamanlayıcıyı temizle
+        cleanup_commands = [
+            ['systemctl', 'stop', 'tahta-kapat.timer'],
+            ['systemctl', 'disable', 'tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/tahta-kapat.service'],
+        ]
+        
+        for cmd in cleanup_commands:
+            self.run_command(cmd, sudo=True)  # Hataları görmezden gel
+        
+        GLib.idle_add(self.update_progress, 0.2)
+        
+        # Servis dosyasını oluştur
+        service_content = """[Unit]
+Description=Tahtayı kapat
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/shutdown -h now
+User=root
+"""
+        
+        try:
+            with open('/etc/systemd/system/tahta-kapat.service', 'w') as f:
+                f.write(service_content)
+        except Exception as e:
+            GLib.idle_add(self.show_error_dialog, "Hata", f"Servis dosyası oluşturulamadı:\n{e}")
+            GLib.idle_add(self.hide_progress)
+            return
+        
+        GLib.idle_add(self.update_progress, 0.4)
+        
+        # Timer dosyasını oluştur (süre sonra)
+        timer_content = f"""[Unit]
+Description=Tahta {minutes} dakika sonra kapansın
+
+[Timer]
+OnBootSec={minutes}min
+AccuracySec=1us
+Unit=tahta-kapat.service
+
+[Install]
+WantedBy=timers.target
+"""
+        
+        try:
+            with open('/etc/systemd/system/tahta-kapat.timer', 'w') as f:
+                f.write(timer_content)
+        except Exception as e:
+            GLib.idle_add(self.show_error_dialog, "Hata", f"Timer dosyası oluşturulamadı:\n{e}")
+            GLib.idle_add(self.hide_progress)
+            return
+        
+        GLib.idle_add(self.update_progress, 0.6)
+        
+        # Zamanlayıcıyı etkinleştir
+        commands = [
+            ['systemctl', 'daemon-reload'],
+            ['systemctl', 'enable', 'tahta-kapat.timer'],
+            ['systemctl', 'start', 'tahta-kapat.timer']
+        ]
+        
+        for i, cmd in enumerate(commands):
+            success, output = self.run_command(cmd, sudo=True)
+            if not success:
+                GLib.idle_add(self.show_error_dialog, "Hata", f"Zamanlayıcı ayarlanırken hata:\n{output}")
+                GLib.idle_add(self.hide_progress)
+                return
+            progress = 0.6 + (i + 1) * 0.4 / len(commands)
+            GLib.idle_add(self.update_progress, progress)
+        
+        # Zamanlayıcı durumunu kontrol et
+        time.sleep(1)
+        success, output = self.run_command(['systemctl', 'is-active', 'tahta-kapat.timer'])
+        
+        if success and 'active' in output:
+            GLib.idle_add(self.show_info_dialog, "Başarılı", 
+                         f"✅ Tahta {minutes} dakika sonra tamamen kapanacak şekilde ayarlandı!\n\n"
+                         f"Zamanlayıcı aktif durumda. Sistem {minutes} dakika sonra kapanacak.\n\n"
+                         "🗂️ Bu pencereyi kapatmanız sistemin çalışmasını etkilemez.")
+        else:
+            GLib.idle_add(self.show_error_dialog, "Uyarı", 
+                         f"Zamanlayıcı ayarlandı ancak aktif değil!\n\n"
+                         f"Lütfen manuel olarak kontrol edin:\n"
+                         f"sudo systemctl status tahta-kapat.timer")
+        
+        GLib.idle_add(self.minutes_entry.set_text, "")
+        GLib.idle_add(self.hide_progress)
+        GLib.idle_add(self.check_timer_status)
+    
+    def set_schedule_thread(self, saat_dakika):
+        """Belirli saatte kapatma zamanlayıcısını thread'de ayarla"""
+        # Önce mevcut zamanlayıcıyı temizle
+        cleanup_commands = [
+            ['systemctl', 'stop', 'tahta-kapat.timer'],
+            ['systemctl', 'disable', 'tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/tahta-kapat.timer'],
+            ['rm', '-f', '/etc/systemd/system/tahta-kapat.service'],
+        ]
+        
+        for cmd in cleanup_commands:
+            self.run_command(cmd, sudo=True)  # Hataları görmezden gel
+        
+        GLib.idle_add(self.update_progress, 0.2)
+        
+        # Servis dosyasını oluştur
+        service_content = """[Unit]
+Description=Tahtayı kapat
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/shutdown -h now
+User=root
+"""
+        
+        try:
+            with open('/etc/systemd/system/tahta-kapat.service', 'w') as f:
+                f.write(service_content)
+        except Exception as e:
+            GLib.idle_add(self.show_error_dialog, "Hata", f"Servis dosyası oluşturulamadı:\n{e}")
+            GLib.idle_add(self.hide_progress)
+            return
+        
+        GLib.idle_add(self.update_progress, 0.4)
+        
+        # Timer dosyasını oluştur (belirli saatte)
+        timer_content = f"""[Unit]
+Description=Tahta her gün saat {saat_dakika}'de kapansın
+
+[Timer]
+OnCalendar=*-*-* {saat_dakika}:00
+AccuracySec=1us
+Unit=tahta-kapat.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+        
+        try:
+            with open('/etc/systemd/system/tahta-kapat.timer', 'w') as f:
+                f.write(timer_content)
+        except Exception as e:
+            GLib.idle_add(self.show_error_dialog, "Hata", f"Timer dosyası oluşturulamadı:\n{e}")
+            GLib.idle_add(self.hide_progress)
+            return
+        
+        GLib.idle_add(self.update_progress, 0.6)
+        
+        # Zamanlayıcıyı etkinleştir
+        commands = [
+            ['systemctl', 'daemon-reload'],
+            ['systemctl', 'enable', 'tahta-kapat.timer'],
+            ['systemctl', 'start', 'tahta-kapat.timer']
+        ]
+        
+        for i, cmd in enumerate(commands):
+            success, output = self.run_command(cmd, sudo=True)
+            if not success:
+                GLib.idle_add(self.show_error_dialog, "Hata", f"Zamanlayıcı ayarlanırken hata:\n{output}")
+                GLib.idle_add(self.hide_progress)
+                return
+            progress = 0.6 + (i + 1) * 0.4 / len(commands)
+            GLib.idle_add(self.update_progress, progress)
+        
+        # Zamanlayıcı durumunu kontrol et
+        time.sleep(1)
+        success, output = self.run_command(['systemctl', 'is-active', 'tahta-kapat.timer'])
+        
+        if success and 'active' in output:
+            GLib.idle_add(self.show_info_dialog, "Başarılı", 
+                         f"✅ Tahta her gün saat {saat_dakika}'de tamamen kapanacak şekilde ayarlandı!\n\n"
+                         f"Zamanlayıcı aktif durumda.\n\n"
+                         "🗂️ Bu pencereyi kapatmanız sistemin çalışmasını etkilemez.")
+        else:
+            GLib.idle_add(self.show_error_dialog, "Uyarı", 
+                         f"Zamanlayıcı ayarlandı ancak aktif değil!\n\n"
+                         f"Lütfen manuel olarak kontrol edin:\n"
+                         f"sudo systemctl status tahta-kapat.timer")
+        
+        GLib.idle_add(self.hour_entry.set_text, "")
+        GLib.idle_add(self.minute_entry.set_text, "")
+        GLib.idle_add(self.hide_progress)
+        GLib.idle_add(self.check_timer_status)
+    
+    def show_progress(self, text):
+        """İlerleme çubuğunu göster"""
+        self.progress_bar.set_visible(True)
+        self.progress_bar.set_text(text)
+        self.progress_bar.set_fraction(0.0)
+        self.set_ui_sensitive(False)
+    
+    def hide_progress(self):
+        """İlerleme çubuğunu gizle"""
+        self.progress_bar.set_visible(False)
+        self.set_ui_sensitive(True)
+    
+    def update_progress(self, fraction):
+        """İlerleme çubuğunu güncelle"""
+        self.progress_bar.set_fraction(fraction)
+    
+    def set_ui_sensitive(self, sensitive):
+        """UI elemanlarının duyarlılığını ayarla"""
+        self.remove_button.set_sensitive(sensitive)
+        self.set_timer_button.set_sensitive(sensitive)
+        self.set_schedule_button.set_sensitive(sensitive)
+        self.minutes_entry.set_sensitive(sensitive)
+        self.hour_entry.set_sensitive(sensitive)
+        self.minute_entry.set_sensitive(sensitive)
+    
+    def show_error_dialog(self, title, message):
+        """Hata dialog göster"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=title
+        )
+        dialog.format_secondary_text(message)
+        dialog.run()
+        dialog.destroy()
+    
+    def show_info_dialog(self, title, message):
+        """Bilgi dialog göster"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text=title
+        )
+        dialog.format_secondary_text(message)
+        dialog.run()
+        dialog.destroy()
+
+def main():
+    # Root kontrolü
+    if os.geteuid() != 0:
+        # Python dosyasını sudo ile yeniden başlat
+        try:
+            subprocess.run(['sudo', sys.executable] + sys.argv, check=True)
+            sys.exit(0)
+        except subprocess.CalledProcessError:
+            print("İptal edildi veya hata oluştu!")
+            sys.exit(1)
+    
+    app = AutoShutdownGUI()
+    Gtk.main()
+
+if __name__ == "__main__":
+    main()

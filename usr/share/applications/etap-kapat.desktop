@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=ETAP Kapatma Zamanlayıcısı
+Comment=Akıllı tahta için otomatik kapanma zamanı ayarla
+Exec=pkexec /usr/bin/etap-kapatma-zamanlayicisi
+Icon=etap-kapat
+Terminal=false
+Type=Application
+Categories=System;Settings;
